@@ -16,6 +16,7 @@
     "next": "16.2.2",
     "posthog-js": "^1.365.4",
     "radix-ui": "^1.4.3",
+    "razorpay": "^2.9.6",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "react-redux": "^9.2.0",

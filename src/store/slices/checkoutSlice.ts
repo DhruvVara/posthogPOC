@@ -51,7 +51,7 @@ const mockAddresses: Address[] = [
 
 const mockPayments: PaymentMethod[] = [
   { id: 'p1', type: 'card', lastFour: '4242', provider: 'Visa', isSelected: true },
-  { id: 'p2', type: 'upi', provider: 'Google Pay', isSelected: false },
+  { id: 'p2', type: 'upi', provider: 'Razorpay', isSelected: false },
   { id: 'p3', type: 'wallet', provider: 'Apple Pay', isSelected: false }
 ];
 

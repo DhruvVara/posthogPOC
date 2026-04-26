@@ -6,17 +6,25 @@ import { RootState } from '@/store/store';
 import { setAddress, setPaymentMethod } from '@/store/slices/checkoutSlice';
 import { ShieldCheck, MapPin, CreditCard, CheckCircle2, ArrowRight, ChevronRight } from 'lucide-react';
 import Image from 'next/image';
+import Script from 'next/script';
 import { usePostHog } from 'posthog-js/react';
 import { PH_EVENTS } from '@/lib/posthog-events';
+
+declare global {
+  interface Window {
+    Razorpay: any;
+  }
+}
 
 const CheckoutPage = () => {
   const posthog = usePostHog();
   const dispatch = useDispatch();
   const { items, totalAmount } = useSelector((state: RootState) => state.cart);
   const { addresses, selectedAddressId, paymentMethods, selectedPaymentMethodId } = useSelector((state: RootState) => state.checkout);
-  
+
   const [step, setStep] = useState(1); // 1: Address, 2: Payment, 3: Confirmation
-  
+  const [isProcessing, setIsProcessing] = useState(false);
+
   const subtotal = totalAmount;
   const shipping = subtotal > 150 ? 0 : 15;
   const tax = subtotal * 0.08;
@@ -25,14 +33,91 @@ const CheckoutPage = () => {
   const currentAddress = addresses.find((a: any) => a.id === selectedAddressId);
   const currentPayment = paymentMethods.find((p: any) => p.id === selectedPaymentMethodId);
 
-  const handlePlaceOrder = () => {
-    setStep(3);
-    posthog.capture(PH_EVENTS.ORDER_COMPLETED, {
-      total_amount: grandTotal,
-      item_count: items.length,
-      payment_method: currentPayment?.provider,
-      shipping_city: currentAddress?.city
-    });
+  const handlePlaceOrder = async () => {
+    if (currentPayment?.provider === 'Razorpay') {
+      await makePayment();
+    } else {
+      // Mock success for other methods
+      setStep(3);
+      posthog.capture(PH_EVENTS.ORDER_COMPLETED, {
+        total_amount: grandTotal,
+        item_count: items.length,
+        payment_method: currentPayment?.provider,
+        shipping_city: currentAddress?.city
+      });
+    }
+  };
+
+  const makePayment = async () => {
+    setIsProcessing(true);
+    try {
+      // 1. Create order on server
+      const response = await fetch('/api/razorpay/order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount: grandTotal }),
+      });
+      const order = await response.json();
+
+      if (order.error) {
+        throw new Error(order.details || order.error);
+      }
+
+      // 2. Open Razorpay modal
+      const options = {
+        key: process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID,
+        amount: order.amount,
+        currency: order.currency,
+        name: 'EziBizi Shop',
+        description: 'Purchase of products',
+        order_id: order.id,
+        handler: async function (response: any) {
+          // 3. Verify payment on server
+          const verificationResponse = await fetch('/api/razorpay/verify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              razorpay_order_id: response.razorpay_order_id,
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_signature: response.razorpay_signature,
+            }),
+          });
+
+          const result = await verificationResponse.json();
+
+          if (result.success) {
+            setStep(3);
+            // posthog.capture(PH_EVENTS.ORDER_COMPLETED, {
+            //   total_amount: grandTotal,
+            //   item_count: items.length,
+            //   payment_method: 'Razorpay',
+            //   shipping_city: currentAddress?.city
+            // });
+          } else {
+            alert('Payment verification failed');
+          }
+          setIsProcessing(false);
+        },
+        prefill: {
+          name: currentAddress?.fullName,
+          email: 'customer@example.com',
+          contact: '9999999999',
+        },
+        theme: { color: '#000000' },
+        modal: {
+          ondismiss: function () {
+            setIsProcessing(false);
+          }
+        }
+      };
+
+      const rzp = new window.Razorpay(options);
+      rzp.open();
+    } catch (error) {
+      console.error('Payment error:', error);
+      alert('Failed to initiate payment. Please check your keys.');
+      setIsProcessing(false);
+    }
   };
 
   if (step === 3) {
@@ -48,14 +133,14 @@ const CheckoutPage = () => {
           </p>
         </div>
         <div className="bg-card border border-border rounded-3xl p-8 max-w-md w-full text-left space-y-4 shadow-xl">
-           <div className="flex justify-between text-sm">
-             <span className="text-muted-foreground">Shipping to:</span>
-             <span className="font-bold">{currentAddress?.fullName}</span>
-           </div>
-           <div className="flex justify-between text-sm">
-             <span className="text-muted-foreground">Estimated Delivery:</span>
-             <span className="font-bold">Next Tuesday</span>
-           </div>
+          <div className="flex justify-between text-sm">
+            <span className="text-muted-foreground">Shipping to:</span>
+            <span className="font-bold">{currentAddress?.fullName}</span>
+          </div>
+          <div className="flex justify-between text-sm">
+            <span className="text-muted-foreground">Estimated Delivery:</span>
+            <span className="font-bold">Next Tuesday</span>
+          </div>
         </div>
         <button className="bg-primary text-primary-foreground px-12 py-4 rounded-full font-bold text-lg hover:scale-105 transition-all shadow-xl shadow-primary/20">
           Track Your Order
@@ -81,10 +166,10 @@ const CheckoutPage = () => {
               <MapPin className="w-6 h-6 text-primary" />
               <h2>Shipping Address</h2>
             </div>
-            
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {addresses.map((addr: any) => (
-                <div 
+                <div
                   key={addr.id}
                   onClick={() => {
                     dispatch(setAddress(addr.id));
@@ -94,11 +179,10 @@ const CheckoutPage = () => {
                       state: addr.state
                     });
                   }}
-                  className={`relative p-6 rounded-2xl border-2 cursor-pointer transition-all ${
-                    selectedAddressId === addr.id 
-                    ? 'border-primary bg-primary/5 shadow-lg' 
+                  className={`relative p-6 rounded-2xl border-2 cursor-pointer transition-all ${selectedAddressId === addr.id
+                    ? 'border-primary bg-primary/5 shadow-lg'
                     : 'border-border hover:border-muted-foreground bg-card'
-                  }`}
+                    }`}
                 >
                   <div className="flex justify-between items-start mb-2">
                     <p className="font-bold">{addr.fullName}</p>
@@ -110,7 +194,7 @@ const CheckoutPage = () => {
                 </div>
               ))}
               <div className="flex items-center justify-center p-6 rounded-2xl border-2 border-dashed border-border hover:border-primary transition-all cursor-pointer group">
-                 <p className="text-sm font-bold text-muted-foreground group-hover:text-primary">+ Add New Address</p>
+                <p className="text-sm font-bold text-muted-foreground group-hover:text-primary">+ Add New Address</p>
               </div>
             </div>
           </section>
@@ -124,7 +208,7 @@ const CheckoutPage = () => {
 
             <div className="space-y-4">
               {paymentMethods.map((pm: any) => (
-                <div 
+                <div
                   key={pm.id}
                   onClick={() => {
                     dispatch(setPaymentMethod(pm.id));
@@ -134,11 +218,10 @@ const CheckoutPage = () => {
                       type: pm.type
                     });
                   }}
-                  className={`flex items-center justify-between p-6 rounded-2xl border-2 cursor-pointer transition-all ${
-                    selectedPaymentMethodId === pm.id 
-                    ? 'border-primary bg-primary/5 shadow-lg' 
+                  className={`flex items-center justify-between p-6 rounded-2xl border-2 cursor-pointer transition-all ${selectedPaymentMethodId === pm.id
+                    ? 'border-primary bg-primary/5 shadow-lg'
                     : 'border-border hover:border-muted-foreground bg-card'
-                  }`}
+                    }`}
                 >
                   <div className="flex items-center space-x-4">
                     <div className="w-12 h-8 bg-muted rounded flex items-center justify-center font-bold text-[10px] uppercase">
@@ -162,7 +245,7 @@ const CheckoutPage = () => {
         <div className="w-full lg:w-[400px]">
           <div className="bg-card rounded-3xl border border-border p-8 sticky top-24 shadow-2xl">
             <h2 className="text-2xl font-black italic tracking-tighter uppercase mb-8">Review Order</h2>
-            
+
             {/* Mini Item List */}
             <div className="max-h-48 overflow-y-auto pr-2 space-y-4 mb-8">
               {items.map((item: any) => (
@@ -200,21 +283,33 @@ const CheckoutPage = () => {
               </div>
             </div>
 
-            <button 
+            <button
               onClick={handlePlaceOrder}
-              className="w-full bg-primary text-primary-foreground h-14 rounded-2xl font-bold text-lg flex items-center justify-center space-x-2 hover:scale-[1.02] active:scale-95 transition-all shadow-xl shadow-primary/20"
+              disabled={isProcessing}
+              className={`w-full bg-primary text-primary-foreground h-14 rounded-2xl font-bold text-lg flex items-center justify-center space-x-2 transition-all shadow-xl shadow-primary/20 ${isProcessing ? 'opacity-70 cursor-not-allowed' : 'hover:scale-[1.02] active:scale-95'
+                }`}
             >
-              <span>Place Order</span>
-              <ArrowRight className="w-5 h-5" />
+              {isProcessing ? (
+                <div className="w-6 h-6 border-2 border-primary-foreground border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <>
+                  <span>Place Order</span>
+                  <ArrowRight className="w-5 h-5" />
+                </>
+              )}
             </button>
 
             <div className="mt-6 flex items-center justify-center space-x-2 text-[10px] text-muted-foreground font-bold uppercase tracking-widest text-center">
-                <ShieldCheck className="w-4 h-4 text-primary" />
-                <span>Encrypted & Protected</span>
+              <ShieldCheck className="w-4 h-4 text-primary" />
+              <span>Encrypted & Protected</span>
             </div>
           </div>
         </div>
       </div>
+      <Script
+        id="razorpay-checkout-js"
+        src="https://checkout.razorpay.com/v1/checkout.js"
+      />
     </div>
   );
 };
